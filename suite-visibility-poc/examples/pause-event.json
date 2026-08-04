@@ -1,0 +1,18 @@
+{
+  "event": "SUITE_PAUSED",
+  "suite": "Modo Seguro 01",
+  "platform": "IOS",
+  "status": "PAUSADA",
+  "reason": "Falha no WebDriverAgent",
+  "description": "WDA não iniciou no device I002",
+  "responsible": "Ygor",
+  "paused_by": "Ygor",
+  "paused_at": "2026-08-04T10:15:00-03:00",
+  "expected_return_at": "2026-08-04T14:00:00-03:00",
+  "returned_at": null,
+  "downtime_minutes": null,
+  "jenkins_job": "Suite Modo Seguro 01 IOS",
+  "jenkins_build": "4784",
+  "jenkins_url": "http://jenkins/job/exemplo/4784/",
+  "notes": null
+}

@@ -1,0 +1,10 @@
+services:
+  suite-visibility:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./runtime:/app/runtime
+      # Monte o repositorio que contem suites/*.json em /suite-repo.
+      # - /opt/appvivo_v2:/suite-repo:ro

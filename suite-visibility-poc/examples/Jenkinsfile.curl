@@ -1,0 +1,137 @@
+import groovy.json.JsonOutput
+
+pipeline {
+    agent any
+
+    parameters {
+        choice(name: 'ACAO', choices: ['PAUSAR', 'RETOMAR'], description: 'Ação que será realizada')
+        string(name: 'SUITE', defaultValue: '', description: 'Nome da suíte')
+        choice(name: 'PLATAFORMA', choices: ['ANDROID', 'IOS', 'WEB'], description: 'Plataforma')
+        choice(name: 'MOTIVO', choices: ['MANUTENCAO', 'MASSA_INDISPONIVEL', 'DEVICE_INDISPONIVEL', 'AMBIENTE_INDISPONIVEL', 'FALHA_APPIUM', 'FALHA_WDA', 'OUTRO'], description: 'Motivo')
+        string(name: 'RESPONSAVEL', defaultValue: '', description: 'Responsável')
+        string(name: 'PAUSADA_POR', defaultValue: '', description: 'Pessoa que executou a pausa/retomada')
+        string(name: 'PREVISAO_RETORNO', defaultValue: '', description: 'Formato: dd/MM/yyyy HH:mm')
+        string(name: 'PAUSADA_EM', defaultValue: '', description: 'Na retomada, informe ISO 8601 com timezone para calcular duração')
+        text(name: 'DESCRICAO', defaultValue: '', description: 'Detalhes ou solução')
+        booleanParam(name: 'DRY_RUN', defaultValue: true, description: 'Não enviar notificação')
+        booleanParam(name: 'FAIL_ON_NOTIFICATION', defaultValue: false, description: 'Falhar o job se a notificação falhar')
+        booleanParam(name: 'DIAGNOSTICAR_CONECTIVIDADE', defaultValue: false, description: 'Testar apenas example.com')
+    }
+
+    stages {
+        stage('Validar parâmetros') {
+            steps {
+                script {
+                    if (!params.SUITE.trim() || !params.RESPONSAVEL.trim() || !params.PAUSADA_POR.trim()) {
+                        error('SUITE, RESPONSAVEL e PAUSADA_POR são obrigatórios')
+                    }
+                }
+            }
+        }
+
+        stage('Diagnosticar conectividade') {
+            when { expression { params.DIAGNOSTICAR_CONECTIVIDADE } }
+            steps {
+                sh '''
+                    set +x
+                    echo "Sistema:"
+                    uname -a || true
+                    echo "Curl:"
+                    curl --version | head -n 1 || true
+                    echo "DNS:"
+                    getent hosts example.com || true
+                    echo "HTTPS:"
+                    curl --silent --show-error --output /dev/null \
+                      --write-out "HTTP_STATUS=%{http_code}\\n" \
+                      --connect-timeout 10 --max-time 20 https://example.com || true
+                '''
+            }
+        }
+
+        stage('Gerar payload') {
+            steps {
+                script {
+                    def nowValue = java.time.OffsetDateTime.now()
+                    def now = nowValue.toString()
+                    def resumed = params.ACAO == 'RETOMAR'
+                    def expectedReturn = null
+                    if (params.PREVISAO_RETORNO.trim()) {
+                        def formatter = java.time.format.DateTimeFormatter.ofPattern('dd/MM/yyyy HH:mm')
+                        expectedReturn = java.time.LocalDateTime.parse(params.PREVISAO_RETORNO.trim(), formatter)
+                            .atZone(java.time.ZoneId.of('America/Sao_Paulo')).toOffsetDateTime().toString()
+                    }
+                    def downtime = null
+                    if (resumed && params.PAUSADA_EM.trim()) {
+                        def paused = java.time.OffsetDateTime.parse(params.PAUSADA_EM.trim())
+                        downtime = java.time.Duration.between(paused, nowValue).toMinutes()
+                        if (downtime < 0) { error('PAUSADA_EM não pode estar no futuro') }
+                    }
+                    def payload = [
+                        event: resumed ? 'SUITE_RESUMED' : 'SUITE_PAUSED',
+                        suite: params.SUITE.trim(),
+                        platform: params.PLATAFORMA,
+                        status: resumed ? 'ATIVA' : 'PAUSADA',
+                        reason: params.MOTIVO,
+                        description: params.DESCRICAO,
+                        responsible: params.RESPONSAVEL.trim(),
+                        paused_by: params.PAUSADA_POR.trim(),
+                        paused_at: resumed && params.PAUSADA_EM.trim() ? params.PAUSADA_EM.trim() : now,
+                        expected_return_at: expectedReturn,
+                        returned_at: resumed ? now : null,
+                        downtime_minutes: downtime,
+                        jenkins_job: env.JOB_NAME,
+                        jenkins_build: env.BUILD_NUMBER,
+                        jenkins_url: env.BUILD_URL,
+                        notes: resumed ? params.DESCRICAO : null
+                    ]
+                    writeFile file: 'payload.json', text: JsonOutput.toJson(payload), encoding: 'UTF-8'
+                }
+            }
+        }
+
+        stage('Notificar Teams') {
+            when { expression { !params.DRY_RUN } }
+            steps {
+                script {
+                    def notify = {
+                        withCredentials([string(credentialsId: 'teams-suite-webhook', variable: 'TEAMS_WEBHOOK_URL')]) {
+                            sh '''
+                                set +x
+                                http_code=$(curl --silent --show-error \
+                                  --output teams-response.tmp \
+                                  --write-out "%{http_code}" \
+                                  --connect-timeout 10 --max-time 30 \
+                                  --request POST --header "Content-Type: application/json" \
+                                  --data @payload.json "$TEAMS_WEBHOOK_URL")
+                                curl_exit=$?
+                                rm -f teams-response.tmp
+                                if [ "$curl_exit" -ne 0 ]; then
+                                  echo "Falha de transporte ao notificar Teams (curl_exit=$curl_exit)"
+                                  exit "$curl_exit"
+                                fi
+                                case "$http_code" in
+                                  2??) echo "Notificação aceita (HTTP $http_code)" ;;
+                                  *) echo "Notificação rejeitada (HTTP $http_code)"; exit 1 ;;
+                                esac
+                            '''
+                        }
+                    }
+                    if (params.FAIL_ON_NOTIFICATION) {
+                        notify()
+                    } else {
+                        catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') { notify() }
+                    }
+                }
+            }
+        }
+
+        stage('Dry run') {
+            when { expression { params.DRY_RUN } }
+            steps { echo 'DRY_RUN=true: payload criado; nenhuma chamada externa foi feita.' }
+        }
+    }
+
+    post {
+        always { sh 'rm -f payload.json teams-response.tmp || true' }
+    }
+}

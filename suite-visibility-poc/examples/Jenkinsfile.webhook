@@ -1,0 +1,51 @@
+import groovy.json.JsonOutput
+
+// Alternativa opcional: exige os plugins HTTP Request e Credentials Binding.
+pipeline {
+    agent any
+    parameters {
+        choice(name: 'ACAO', choices: ['PAUSAR', 'RETOMAR'], description: 'Ação')
+        string(name: 'SUITE', defaultValue: '', description: 'Nome da suíte')
+        choice(name: 'PLATAFORMA', choices: ['ANDROID', 'IOS', 'WEB'], description: 'Plataforma')
+        string(name: 'RESPONSAVEL', defaultValue: '', description: 'Responsável')
+        text(name: 'DESCRICAO', defaultValue: '', description: 'Motivo ou solução')
+        booleanParam(name: 'DRY_RUN', defaultValue: true, description: 'Não enviar')
+    }
+    stages {
+        stage('Notificar Teams com httpRequest') {
+            steps {
+                script {
+                    def payload = JsonOutput.toJson([
+                        event: params.ACAO == 'RETOMAR' ? 'SUITE_RESUMED' : 'SUITE_PAUSED',
+                        suite: params.SUITE,
+                        platform: params.PLATAFORMA,
+                        status: params.ACAO == 'RETOMAR' ? 'ATIVA' : 'PAUSADA',
+                        description: params.DESCRICAO,
+                        responsible: params.RESPONSAVEL,
+                        occurred_at: java.time.OffsetDateTime.now().toString(),
+                        jenkins_job: env.JOB_NAME,
+                        jenkins_build: env.BUILD_NUMBER,
+                        jenkins_url: env.BUILD_URL
+                    ])
+                    if (params.DRY_RUN) {
+                        echo 'DRY_RUN=true: nenhuma chamada externa foi feita.'
+                    } else {
+                        withCredentials([string(credentialsId: 'teams-suite-webhook', variable: 'TEAMS_WEBHOOK_URL')]) {
+                            httpRequest(
+                                httpMode: 'POST',
+                                url: env.TEAMS_WEBHOOK_URL,
+                                contentType: 'APPLICATION_JSON',
+                                requestBody: payload,
+                                timeout: 30,
+                                validResponseCodes: '200:299',
+                                consoleLogResponseBody: false,
+                                quiet: true
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+

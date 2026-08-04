@@ -1,0 +1,21 @@
+[Unit]
+Description=Suite Visibility Jenkins to Trello monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=suite-visibility
+Group=suite-visibility
+WorkingDirectory=/opt/suite-visibility
+EnvironmentFile=/etc/suite-visibility.env
+ExecStart=/opt/suite-visibility/.venv/bin/python -m suite_visibility.cli serve
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/suite-visibility/runtime
+
+[Install]
+WantedBy=multi-user.target
