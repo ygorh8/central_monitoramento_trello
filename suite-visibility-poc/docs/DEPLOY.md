@@ -25,6 +25,12 @@ docker compose ps
 
 O volume `./runtime:/app/runtime` preserva a linha de base e os acknowledgements. Em uma plataforma gerenciada, substitua `.env` pelo mecanismo de secrets e use um volume persistente equivalente.
 
+## Windows
+
+Depois de criar `.venv`, instalar o pacote, guardar as credenciais e validar `monitor-once --force`, execute `scripts/install_windows_task.ps1`. A tarefa roda no contexto do usuario atual, permitindo acesso ao Gerenciador de Credenciais do Windows, e inicia o processo no logon.
+
+Use `scripts/uninstall_windows_task.ps1` antes de migrar definitivamente para um servidor, evitando duas instancias ativas.
+
 ## Linux com systemd
 
 ```bash

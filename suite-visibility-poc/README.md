@@ -61,6 +61,18 @@ Verificar a saude do processo:
 python -m suite_visibility.cli healthcheck
 ```
 
+Depois de validar `monitor-once --force`, instale o servico local no Agendador de Tarefas:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install_windows_task.ps1
+```
+
+Ele inicia no logon do usuario e reinicia automaticamente em caso de falha. Para remover:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\uninstall_windows_task.ps1
+```
+
 Os comandos antigos de diagnostico e inventario continuam disponiveis em `python -m suite_visibility.cli --help`.
 
 ## Configuracao principal
