@@ -3,7 +3,7 @@ param(
 )
 
 $projectDir = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$pythonExe = Join-Path $projectDir ".venv\Scripts\python.exe"
+$pythonExe = Join-Path $projectDir ".venv\Scripts\pythonw.exe"
 
 if (-not (Test-Path -LiteralPath $pythonExe)) {
     throw "Ambiente virtual nao encontrado em $pythonExe. Execute a instalacao descrita no README primeiro."
@@ -21,6 +21,7 @@ $settings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit ([TimeSpan]::Zero) `
     -RestartCount 10 `
     -RestartInterval (New-TimeSpan -Minutes 1) `
+    -MultipleInstances IgnoreNew `
     -StartWhenAvailable
 $principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive -RunLevel Limited
 $task = New-ScheduledTask -Action $action -Trigger $trigger -Settings $settings -Principal $principal

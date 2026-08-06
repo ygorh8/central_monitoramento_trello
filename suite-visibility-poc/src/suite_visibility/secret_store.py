@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import keyring
 from keyring.errors import KeyringError
 
@@ -26,10 +28,14 @@ def get_jenkins_token(username: str | None) -> str | None:
 
 
 def store_trello_credentials(api_key: str, api_token: str) -> None:
-    if not api_key.strip() or not api_token.strip():
+    clean_key = api_key.strip()
+    clean_token = api_token.strip()
+    if not clean_key or not clean_token:
         raise ValueError("Chave e token Trello sao obrigatorios")
-    keyring.set_password(TRELLO_SERVICE_NAME, "api_key", api_key.strip())
-    keyring.set_password(TRELLO_SERVICE_NAME, "api_token", api_token.strip())
+    if not re.fullmatch(r"[0-9a-fA-F]{32}", clean_key):
+        raise ValueError("A API key Trello deve conter exatamente 32 caracteres hexadecimais; nao cole uma URL")
+    keyring.set_password(TRELLO_SERVICE_NAME, "api_key", clean_key)
+    keyring.set_password(TRELLO_SERVICE_NAME, "api_token", clean_token)
 
 
 def get_trello_credentials() -> tuple[str | None, str | None]:

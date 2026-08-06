@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from dotenv import load_dotenv
+
 from .secret_store import get_jenkins_token, get_trello_credentials
 
 
@@ -25,7 +27,9 @@ class Settings:
     suite_repository_path: str = ""
     monitor_state_file: str = "runtime/jenkins_job_state.json"
     monitor_status_file: str = "runtime/service_status.json"
+    reconciliation_status_file: str = "runtime/reconciliation_status.json"
     monitor_interval_seconds: int = 30
+    reconciliation_interval_seconds: int = 3600
     monitor_timezone: str = "America/Sao_Paulo"
     monitor_start_hour: int = 7
     monitor_end_hour: int = 19
@@ -34,6 +38,8 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
+        # Variaveis do processo prevalecem sobre os valores locais do .env.
+        load_dotenv(override=False)
         jenkins_username = os.getenv("JENKINS_USERNAME") or None
         stored_trello_key, stored_trello_token = get_trello_credentials()
         return cls(
@@ -52,7 +58,9 @@ class Settings:
             suite_repository_path=os.getenv("SUITE_REPOSITORY_PATH", ""),
             monitor_state_file=os.getenv("MONITOR_STATE_FILE", "runtime/jenkins_job_state.json"),
             monitor_status_file=os.getenv("MONITOR_STATUS_FILE", "runtime/service_status.json"),
+            reconciliation_status_file=os.getenv("RECONCILIATION_STATUS_FILE", "runtime/reconciliation_status.json"),
             monitor_interval_seconds=int(os.getenv("MONITOR_INTERVAL_SECONDS", "30")),
+            reconciliation_interval_seconds=int(os.getenv("RECONCILIATION_INTERVAL_SECONDS", "3600")),
             monitor_timezone=os.getenv("MONITOR_TIMEZONE", "America/Sao_Paulo"),
             monitor_start_hour=int(os.getenv("MONITOR_START_HOUR", "7")),
             monitor_end_hour=int(os.getenv("MONITOR_END_HOUR", "19")),
@@ -75,6 +83,8 @@ class Settings:
                 missing.append(name)
         if self.monitor_interval_seconds < 5:
             missing.append("MONITOR_INTERVAL_SECONDS>=5")
+        if self.reconciliation_interval_seconds < 60:
+            missing.append("RECONCILIATION_INTERVAL_SECONDS>=60")
         if not 0 <= self.monitor_start_hour < self.monitor_end_hour <= 24:
             missing.append("MONITOR_START_HOUR/MONITOR_END_HOUR")
         return missing

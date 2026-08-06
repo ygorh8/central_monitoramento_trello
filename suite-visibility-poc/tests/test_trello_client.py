@@ -71,6 +71,14 @@ def test_find_jenkins_pause_card_requires_exact_job_and_build_lines():
     assert card["id"] == "right"
 
 
+def test_find_jenkins_pause_card_ignores_completed_card():
+    session = QueueSession(Response(200, [
+        {"id": "complete", "desc": "Jenkins: http://jenkins/job/a/", "dueComplete": True},
+        {"id": "active", "desc": "Jenkins: http://jenkins/job/a/", "dueComplete": False},
+    ]))
+    assert client(session).find_jenkins_pause_card("http://jenkins/job/a/")["id"] == "active"
+
+
 def test_create_jenkins_pause_card_formats_operational_description():
     session = QueueSession(Response(200, {"id": "new", "url": "https://trello/card"}))
     result = client(session).create_jenkins_pause_card(
@@ -89,3 +97,36 @@ def test_create_jenkins_pause_card_formats_operational_description():
     assert params["name"] == "[PAUSADA] Suite A"
     assert "Bots impactados: 101, 102" in params["desc"]
     assert "Build: http://jenkins/job/a/10/" in params["desc"]
+
+
+def test_diagnose_validates_member_board_and_list_with_get_only():
+    session = QueueSession(
+        Response(200, {"username": "user"}),
+        Response(200, {"name": "Poc_Suite"}),
+        Response(200, {"name": "Tarefas", "idBoard": "board"}),
+    )
+    result = client(session).diagnose("tasks")
+    assert result == {"ok": True, "member": "user", "board": "Poc_Suite", "list": "Tarefas"}
+    assert [call[0] for call in session.calls] == ["GET", "GET", "GET"]
+
+
+def test_diagnose_rejects_list_from_another_board():
+    session = QueueSession(
+        Response(200, {"username": "user"}),
+        Response(200, {"name": "Poc_Suite"}),
+        Response(200, {"name": "Tarefas", "idBoard": "other"}),
+    )
+    with pytest.raises(TrelloError, match="nao pertence"):
+        client(session).diagnose("tasks")
+
+
+def test_mark_card_complete_updates_due_complete_without_moving_card():
+    session = QueueSession(
+        Response(200, {"id": "card-1", "dueComplete": False}),
+        Response(200, {"id": "card-1", "dueComplete": True}),
+    )
+    result = client(session).mark_card_complete("https://trello.com/c/abc123/card-name")
+    assert result["changed"] is True
+    assert session.calls[1][0] == "PUT"
+    assert session.calls[1][2]["params"]["dueComplete"] == "true"
+    assert "idList" not in session.calls[1][2]["params"]

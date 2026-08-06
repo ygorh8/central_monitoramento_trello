@@ -71,6 +71,11 @@ def monitor_jobs(
             "event_build_url": event_build_url,
             "event_build_timestamp": event_build_timestamp,
             "trello_card_url": old.get("trello_card_url") if isinstance(old, dict) else None,
+            "trello_card_created_at": old.get("trello_card_created_at") if isinstance(old, dict) else None,
+            "tracked_pause_signal": old.get("tracked_pause_signal") if isinstance(old, dict) else None,
+            "tracked_event_build_number": old.get("tracked_event_build_number") if isinstance(old, dict) else None,
+            "tracked_event_build_url": old.get("tracked_event_build_url") if isinstance(old, dict) else None,
+            "trello_completed_at": old.get("trello_completed_at") if isinstance(old, dict) else None,
         }
         current[job.url] = record
         if pending_trello:
@@ -88,7 +93,35 @@ def acknowledge_trello_card(state_path: Path, job_url: str, card_url: str) -> No
     job["pending_trello"] = False
     job["trello_card_url"] = card_url
     job["trello_card_created_at"] = datetime.now(timezone.utc).isoformat()
+    job["tracked_pause_signal"] = job.get("pause_signal")
+    job["tracked_event_build_number"] = job.get("event_build_number")
+    job["tracked_event_build_url"] = job.get("event_build_url")
+    job["trello_completed_at"] = None
     _write_state(state_path, payload)
+
+
+def mark_trello_card_completed(
+    state_path: Path,
+    job_url: str,
+    *,
+    pause_signal: str | None = None,
+    event_build_number: int | None = None,
+    event_build_url: str | None = None,
+) -> str:
+    payload = json.loads(state_path.read_text(encoding="utf-8"))
+    job = payload.get("jobs", {}).get(job_url)
+    if not isinstance(job, dict):
+        raise KeyError("Job nao encontrado no estado")
+    completed_at = datetime.now(timezone.utc).isoformat()
+    job["trello_completed_at"] = completed_at
+    if pause_signal:
+        job["tracked_pause_signal"] = pause_signal
+    if event_build_number is not None:
+        job["tracked_event_build_number"] = event_build_number
+    if event_build_url:
+        job["tracked_event_build_url"] = event_build_url
+    _write_state(state_path, payload)
+    return completed_at
 
 
 def ignore_jenkins_event(state_path: Path, job_url: str, reason: str) -> None:

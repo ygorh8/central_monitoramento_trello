@@ -2,7 +2,7 @@ import json
 
 from suite_visibility.config import Settings
 from suite_visibility.jenkins_client import JenkinsJob
-from suite_visibility.service import SuiteVisibilityService, healthcheck
+from suite_visibility.service import SuiteVisibilityService, _display_time, healthcheck
 
 
 class FakeJenkins:
@@ -19,6 +19,7 @@ class FakeJenkins:
 class FakeTrello:
     def __init__(self):
         self.created = []
+        self.completed = []
 
     def find_jenkins_pause_card(self, _job_url, _build_url=None):
         return None
@@ -26,6 +27,13 @@ class FakeTrello:
     def create_jenkins_pause_card(self, **kwargs):
         self.created.append(kwargs)
         return {"url": "https://trello/card-1"}
+
+    def get_card(self, card_url):
+        return {"id": "card-1", "url": card_url, "desc": "Sinal: JOB_DISABLED", "dueComplete": False}
+
+    def mark_card_complete(self, card_url):
+        self.completed.append(card_url)
+        return {"changed": True, "card": {"id": "card-1", "dueComplete": True}}
 
 
 def settings(tmp_path):
@@ -43,7 +51,12 @@ def settings(tmp_path):
         suite_repository_path=str(tmp_path / "repo"),
         monitor_state_file=str(tmp_path / "state.json"),
         monitor_status_file=str(tmp_path / "status.json"),
+        reconciliation_status_file=str(tmp_path / "reconciliation.json"),
     )
+
+
+def test_display_time_converts_to_configured_timezone_without_offset_suffix():
+    assert _display_time("2026-08-05T19:02:51+00:00", "America/Sao_Paulo") == "05/08/2026 16:02:51"
 
 
 def test_service_detects_manual_abort_and_creates_card(tmp_path, monkeypatch):
@@ -82,3 +95,56 @@ def test_healthcheck_rejects_missing_status(tmp_path):
     healthy, result = healthcheck(settings(tmp_path))
     assert healthy is False
     assert result["reason"] == "status_file_missing"
+
+
+def test_hourly_reconciliation_completes_enabled_job_card(tmp_path):
+    active = JenkinsJob("Suite A", "http://jenkins/job/a/", "blue", True, 12, "SUCCESS")
+    state = {
+        "updated_at": "2026-08-05T10:00:00+00:00",
+        "jobs": {
+            active.url: {
+                "name": active.name,
+                "url": active.url,
+                "paused": False,
+                "pending_trello": False,
+                "trello_card_url": "https://trello.com/c/card1/suite-a",
+                "tracked_pause_signal": "JOB_DISABLED",
+                "trello_completed_at": None,
+            }
+        },
+    }
+    (tmp_path / "state.json").write_text(json.dumps(state), encoding="utf-8")
+    trello = FakeTrello()
+    service = SuiteVisibilityService(settings(tmp_path), jenkins_client=FakeJenkins([[active]]), trello_client=trello)
+
+    result = service.reconcile_cards(force=True)
+
+    assert result["ok"] is True
+    assert result["completed"][0]["action"] == "completed"
+    assert trello.completed == ["https://trello.com/c/card1/suite-a"]
+    updated = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    assert updated["jobs"][active.url]["trello_completed_at"] is not None
+
+
+def test_hourly_reconciliation_keeps_disabled_job_open(tmp_path):
+    disabled = JenkinsJob("Suite A", "http://jenkins/job/a/", "disabled", False)
+    state = {
+        "jobs": {
+            disabled.url: {
+                "name": disabled.name,
+                "url": disabled.url,
+                "paused": True,
+                "trello_card_url": "https://trello.com/c/card1/suite-a",
+                "tracked_pause_signal": "JOB_DISABLED",
+                "trello_completed_at": None,
+            }
+        }
+    }
+    (tmp_path / "state.json").write_text(json.dumps(state), encoding="utf-8")
+    trello = FakeTrello()
+    service = SuiteVisibilityService(settings(tmp_path), jenkins_client=FakeJenkins([[disabled]]), trello_client=trello)
+
+    result = service.reconcile_cards(force=True)
+
+    assert result["completed"] == []
+    assert trello.completed == []

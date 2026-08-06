@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+import re
+import sys
+import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .config import Settings
 from .jenkins_client import JenkinsApiError, JenkinsReadOnlyClient
-from .jenkins_monitor import acknowledge_trello_card, ignore_jenkins_event, monitor_jobs
+from .jenkins_monitor import acknowledge_trello_card, ignore_jenkins_event, mark_trello_card_completed, monitor_jobs
 from .suite_bot_mapper import bots_from_manifest, suite_manifest_from_config
 from .trello_client import TrelloClient, TrelloError
 
@@ -27,7 +30,7 @@ def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
 
 def _display_time(value: str | None, timezone_name: str) -> str:
     parsed = datetime.fromisoformat(value) if value else datetime.now(timezone.utc)
-    return parsed.astimezone(ZoneInfo(timezone_name)).strftime("%d/%m/%Y %H:%M:%S (%Z)")
+    return parsed.astimezone(ZoneInfo(timezone_name)).strftime("%d/%m/%Y %H:%M:%S")
 
 
 class SuiteVisibilityService:
@@ -41,6 +44,8 @@ class SuiteVisibilityService:
         self.settings = settings
         self.state_path = Path(settings.monitor_state_file)
         self.status_path = Path(settings.monitor_status_file)
+        self.reconciliation_status_path = Path(settings.reconciliation_status_file)
+        self._state_lock = threading.Lock()
         self.repository_path = Path(settings.suite_repository_path) if settings.suite_repository_path else None
         self.jenkins = jenkins_client or JenkinsReadOnlyClient(
             timeout=settings.http_timeout_seconds,
@@ -131,6 +136,10 @@ class SuiteVisibilityService:
         return result
 
     def run_once(self, *, force: bool = False) -> dict[str, object]:
+        with self._state_lock:
+            return self._run_once_locked(force=force)
+
+    def _run_once_locked(self, *, force: bool = False) -> dict[str, object]:
         missing = self.settings.validate_monitor()
         if missing:
             return self._write_status(
@@ -173,6 +182,96 @@ class SuiteVisibilityService:
             },
         )
 
+    @staticmethod
+    def _incident_from_card(card: dict[str, object]) -> tuple[str | None, int | None, str | None]:
+        description = str(card.get("desc") or "")
+        signal_match = re.search(r"(?m)^Sinal:\s*(\S+)", description)
+        build_match = re.search(r"(?m)^Build:\s*(\S+)", description)
+        build_url = build_match.group(1) if build_match else None
+        number_match = re.search(r"/(\d+)/?$", build_url or "")
+        build_number = int(number_match.group(1)) if number_match else None
+        return signal_match.group(1) if signal_match else None, build_number, build_url
+
+    @staticmethod
+    def _has_recovered(job, signal: str | None, event_build_number: int | None) -> bool:
+        if signal == "JOB_DISABLED":
+            return not job.paused
+        if signal == "BUILD_ABORTED" and event_build_number is not None:
+            current_number = job.last_build_number
+            return bool(
+                not job.paused
+                and current_number is not None
+                and current_number > event_build_number
+                and job.last_build_result != "ABORTED"
+            )
+        return False
+
+    def reconcile_cards(self, *, force: bool = False) -> dict[str, object]:
+        with self._state_lock:
+            if not force and not self._in_operating_window():
+                result = {"ok": True, "state": "outside_operating_window", "checked": 0, "completed": [], "errors": []}
+                _write_json_atomic(self.reconciliation_status_path, {"last_run_at": datetime.now(timezone.utc).isoformat(), **result})
+                return result
+            try:
+                jobs = self.jenkins.list_jobs(str(self.settings.jenkins_url))
+                payload = json.loads(self.state_path.read_text(encoding="utf-8"))
+            except (JenkinsApiError, OSError, ValueError, json.JSONDecodeError) as exc:
+                result = {"ok": False, "state": "jenkins_or_state_error", "error": str(exc), "checked": 0, "completed": [], "errors": []}
+                _write_json_atomic(self.reconciliation_status_path, {"last_run_at": datetime.now(timezone.utc).isoformat(), **result})
+                return result
+
+            current_by_url = {job.url: job for job in jobs}
+            completed: list[dict[str, object]] = []
+            errors: list[dict[str, str]] = []
+            checked = 0
+            for job_url, record in payload.get("jobs", {}).items():
+                if not isinstance(record, dict) or not record.get("trello_card_url") or record.get("trello_completed_at"):
+                    continue
+                current = current_by_url.get(job_url)
+                if current is None:
+                    continue
+                checked += 1
+                try:
+                    card = self.trello.get_card(str(record["trello_card_url"]))
+                    signal = record.get("tracked_pause_signal")
+                    build_number = record.get("tracked_event_build_number")
+                    build_url = record.get("tracked_event_build_url")
+                    if not signal:
+                        signal, parsed_number, parsed_url = self._incident_from_card(card)
+                        build_number = build_number if build_number is not None else parsed_number
+                        build_url = build_url or parsed_url
+                    if card.get("dueComplete") is True:
+                        mark_trello_card_completed(
+                            self.state_path,
+                            job_url,
+                            pause_signal=str(signal) if signal else None,
+                            event_build_number=int(build_number) if build_number is not None else None,
+                            event_build_url=str(build_url) if build_url else None,
+                        )
+                        completed.append({"job": current.name, "card_url": record["trello_card_url"], "action": "already_complete"})
+                        continue
+                    if not self._has_recovered(current, str(signal) if signal else None, int(build_number) if build_number is not None else None):
+                        continue
+                    trello_result = self.trello.mark_card_complete(str(record["trello_card_url"]))
+                    mark_trello_card_completed(
+                        self.state_path,
+                        job_url,
+                        pause_signal=str(signal) if signal else None,
+                        event_build_number=int(build_number) if build_number is not None else None,
+                        event_build_url=str(build_url) if build_url else None,
+                    )
+                    completed.append({
+                        "job": current.name,
+                        "card_url": record["trello_card_url"],
+                        "action": "completed" if trello_result.get("changed") else "already_complete",
+                    })
+                except (TrelloError, OSError, ValueError, KeyError) as exc:
+                    errors.append({"job": str(record.get("name") or job_url), "error": str(exc)})
+
+            result = {"ok": not errors, "state": "ok" if not errors else "degraded", "checked": checked, "completed": completed, "errors": errors}
+            _write_json_atomic(self.reconciliation_status_path, {"last_run_at": datetime.now(timezone.utc).isoformat(), **result})
+            return result
+
 
 def healthcheck(settings: Settings) -> tuple[bool, dict[str, object]]:
     path = Path(settings.monitor_status_file)
@@ -191,9 +290,16 @@ def healthcheck(settings: Settings) -> tuple[bool, dict[str, object]]:
 def run_scheduler(settings: Settings) -> None:
     from apscheduler.schedulers.blocking import BlockingScheduler
 
+    log_path = Path(settings.monitor_status_file).with_name("service.log")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    handlers: list[logging.Handler] = [logging.FileHandler(log_path, encoding="utf-8")]
+    if sys.stderr is not None:
+        handlers.append(logging.StreamHandler())
     logging.basicConfig(
         level=getattr(logging, settings.log_level, logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        handlers=handlers,
+        force=True,
     )
     service = SuiteVisibilityService(settings)
     scheduler = BlockingScheduler(timezone=ZoneInfo(settings.monitor_timezone))
@@ -212,6 +318,16 @@ def run_scheduler(settings: Settings) -> None:
         coalesce=True,
         misfire_grace_time=max(settings.monitor_interval_seconds, 10),
         id="jenkins-to-trello",
+    )
+    scheduler.add_job(
+        lambda: LOGGER.info("Reconciliacao executada: %s", json.dumps(service.reconcile_cards(), ensure_ascii=False)),
+        "interval",
+        seconds=settings.reconciliation_interval_seconds,
+        next_run_time=datetime.now(ZoneInfo(settings.monitor_timezone)) + timedelta(seconds=settings.reconciliation_interval_seconds),
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=max(settings.reconciliation_interval_seconds, 60),
+        id="jenkins-trello-reconciliation",
     )
     LOGGER.info("Servico iniciado; intervalo=%ss", settings.monitor_interval_seconds)
     scheduler.start()

@@ -1,5 +1,6 @@
 requests>=2.32,<3
 keyring>=25,<27
-APScheduler>=3.10,<4
+python-dotenv>=1.0,<2
+APScheduler>=3.11,<4
 tzdata>=2025.2
 pytest>=8,<10

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from urllib.parse import urlparse
 
 import requests
 
@@ -48,6 +49,24 @@ class TrelloClient:
         except ValueError as exc:
             raise TrelloError("Resposta JSON inválida do Trello") from exc
 
+    def diagnose(self, list_id: str | None) -> dict[str, object]:
+        """Validate credentials and configured targets using read-only requests."""
+        if not self._board_id:
+            raise TrelloError("TRELLO_BOARD_ID nao configurado")
+        if not list_id:
+            raise TrelloError("TRELLO_PAUSED_LIST_ID nao configurado")
+        member = self._request("GET", "/members/me", params={"fields": "username"})
+        board = self._request("GET", f"/boards/{self._board_id}", params={"fields": "name"})
+        target_list = self._request("GET", f"/lists/{list_id}", params={"fields": "name,idBoard"})
+        if target_list.get("idBoard") != self._board_id:
+            raise TrelloError("A lista configurada nao pertence ao quadro configurado")
+        return {
+            "ok": True,
+            "member": member.get("username"),
+            "board": board.get("name"),
+            "list": target_list.get("name"),
+        }
+
     def find_card(self, suite_id: str) -> dict | None:
         if not self._board_id:
             raise TrelloError("TRELLO_BOARD_ID não configurado")
@@ -62,15 +81,35 @@ class TrelloClient:
         cards = self._request(
             "GET",
             f"/boards/{self._board_id}/cards",
-            params={"fields": "name,desc,idList,url", "filter": "open"},
+            params={"fields": "name,desc,idList,url,dueComplete", "filter": "open"},
         )
         job_marker = f"Jenkins: {job_url}"
         build_marker = f"Build: {build_url}" if build_url else None
         for card in cards:
+            if card.get("dueComplete") is True:
+                continue
             lines = {line.strip() for line in str(card.get("desc", "")).splitlines()}
             if job_marker in lines and (build_marker is None or build_marker in lines):
                 return card
         return None
+
+    def get_card(self, card_url: str) -> dict:
+        parsed = urlparse(card_url)
+        parts = [part for part in parsed.path.split("/") if part]
+        if parsed.netloc.lower() not in {"trello.com", "www.trello.com"} or len(parts) < 2 or parts[0] != "c":
+            raise TrelloError("URL de cartao Trello invalida")
+        return self._request(
+            "GET",
+            f"/cards/{parts[1]}",
+            params={"fields": "id,name,desc,dueComplete,url,closed"},
+        )
+
+    def mark_card_complete(self, card_url: str) -> dict[str, object]:
+        card = self.get_card(card_url)
+        if card.get("dueComplete") is True:
+            return {"changed": False, "card": card}
+        updated = self._request("PUT", f"/cards/{card['id']}", params={"dueComplete": "true"})
+        return {"changed": True, "card": updated}
 
     def create_jenkins_pause_card(
         self,

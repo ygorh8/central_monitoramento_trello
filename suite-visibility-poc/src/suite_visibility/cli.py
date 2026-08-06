@@ -67,6 +67,8 @@ def build_parser() -> argparse.ArgumentParser:
     diagnose.add_argument("--url", required=True)
     diagnose.add_argument("--read-only", action="store_true", required=True)
 
+    sub.add_parser("diagnose-trello", help="Valida credenciais, quadro e lista somente por GET")
+
     inventory = sub.add_parser("list-jenkins-suites", help="Lista jobs pela API REST somente leitura")
     inventory.add_argument("--url", help="Sobrescreve JENKINS_URL")
 
@@ -95,6 +97,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     monitor_once = sub.add_parser("monitor-once", help="Executa o fluxo Jenkins para Trello uma vez")
     monitor_once.add_argument("--force", action="store_true", help="ignora apenas a janela de horario")
+
+    reconcile_once = sub.add_parser("reconcile-once", help="Revisa cartoes e conclui suites retomadas")
+    reconcile_once.add_argument("--force", action="store_true", help="ignora apenas a janela de horario")
 
     sub.add_parser("serve", help="Inicia o monitor autonomo em primeiro plano")
     sub.add_parser("healthcheck", help="Valida a saude do servico pelo arquivo de status")
@@ -135,6 +140,20 @@ def main(argv: list[str] | None = None) -> int:
         print("Autenticação: não fornecida")
         diagnosis = JenkinsReadOnlyClient(timeout=settings.http_timeout_seconds).diagnose(args.url)
         print(json.dumps(diagnosis.to_dict(), ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "diagnose-trello":
+        try:
+            result = TrelloClient(
+                settings.trello_api_key,
+                settings.trello_api_token,
+                settings.trello_board_id,
+                timeout=settings.http_timeout_seconds,
+            ).diagnose(settings.trello_paused_list_id)
+        except TrelloError as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+            return 2
+        print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
 
     if args.command in {"list-jenkins-suites", "monitor-jenkins"}:
@@ -219,6 +238,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "monitor-once":
         result = SuiteVisibilityService(settings).run_once(force=args.force)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result.get("ok") else 2
+
+    if args.command == "reconcile-once":
+        result = SuiteVisibilityService(settings).reconcile_cards(force=args.force)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0 if result.get("ok") else 2
 

@@ -39,7 +39,7 @@ Chave e token Trello podem ser armazenados da mesma forma:
 .\.venv\Scripts\python.exe scripts\store_trello_credentials_once.py
 ```
 
-Copie `.env.example` para `.env` apenas para desenvolvimento. O arquivo `.env` e ignorado pelo Git. Em producao, use secrets do servidor ou da plataforma.
+Copie `.env.example` para `.env`. A aplicacao o carrega automaticamente e o arquivo e ignorado pelo Git. No Windows, mantenha tokens no Gerenciador de Credenciais; em producao, use secrets do servidor ou da plataforma.
 
 ## Comandos
 
@@ -60,6 +60,20 @@ Verificar a saude do processo:
 ```powershell
 python -m suite_visibility.cli healthcheck
 ```
+
+Validar credenciais Trello, quadro e lista sem criar ou alterar cartoes:
+
+```powershell
+python -m suite_visibility.cli diagnose-trello
+```
+
+Executar manualmente a reconciliacao que ocorre de hora em hora:
+
+```powershell
+python -m suite_visibility.cli reconcile-once --force
+```
+
+Cartoes de suites ainda desabilitadas ou sem uma build posterior permanecem abertos. Quando o job e habilitado novamente, ou uma build posterior ao aborto volta a executar, o cartao permanece na lista e recebe `dueComplete=true` (status concluido do Trello).
 
 Depois de validar `monitor-once --force`, instale o servico local no Agendador de Tarefas:
 
@@ -87,6 +101,7 @@ Os comandos antigos de diagnostico e inventario continuam disponiveis em `python
 | `TRELLO_PAUSED_LIST_ID` | ID da lista `Tarefas` |
 | `SUITE_REPOSITORY_PATH` | Repositorio que contem `suites/*.json` |
 | `MONITOR_INTERVAL_SECONDS` | Intervalo, padrao 30 segundos |
+| `RECONCILIATION_INTERVAL_SECONDS` | Revisao de recuperacao, padrao 3600 segundos |
 | `MONITOR_TIMEZONE` | Padrao `America/Sao_Paulo` |
 | `MONITOR_START_HOUR` / `MONITOR_END_HOUR` | Janela 07h-19h |
 

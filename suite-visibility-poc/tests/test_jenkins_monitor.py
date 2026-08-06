@@ -87,3 +87,19 @@ def test_abort_is_detected_when_a_newer_build_is_already_running(tmp_path):
     result = monitor_jobs([after], state)
 
     assert result["pending_paused"][0]["event_build_url"] == "http://jenkins/job/a/11/"
+
+
+def test_acknowledged_incident_metadata_survives_future_monitor_cycles(tmp_path):
+    state = tmp_path / "state.json"
+    active = JenkinsJob("Suite A", "http://jenkins/job/a/", "blue", True)
+    disabled = JenkinsJob("Suite A", "http://jenkins/job/a/", "disabled", False)
+    monitor_jobs([active], state)
+    monitor_jobs([disabled], state)
+    acknowledge_trello_card(state, disabled.url, "https://trello.com/c/card")
+
+    monitor_jobs([disabled], state)
+    payload = json.loads(state.read_text(encoding="utf-8"))["jobs"][disabled.url]
+
+    assert payload["tracked_pause_signal"] == "JOB_DISABLED"
+    assert payload["trello_card_url"] == "https://trello.com/c/card"
+    assert payload["trello_card_created_at"] is not None
